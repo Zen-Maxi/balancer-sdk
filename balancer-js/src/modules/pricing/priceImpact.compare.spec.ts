@@ -2,6 +2,7 @@
 import { BigNumber, formatFixed, parseFixed } from '@ethersproject/bignumber';
 import { JsonRpcProvider } from '@ethersproject/providers';
 import dotenv from 'dotenv';
+import * as fs from 'fs';
 
 import {
   Address,
@@ -26,27 +27,52 @@ const { contracts, pricing } = sdk;
 const provider = new JsonRpcProvider(rpcUrl, 1);
 const signer = provider.getSigner();
 const { balancerHelpers, vault } = contracts;
+const csvFilePath = 'results.csv';
+// Write the header to the CSV file
+fs.writeFileSync(csvFilePath, 'Test,Method,Price Impact\n', { flag: 'w' });
 
 const blockNumber = 18559730;
 const testPoolId =
-  '0x5c6ee304399dbdb9c8ef030ab642b10820db8f56000200000000000000000014'; // 80BAL/20WETH
+  '0x42ed016f826165c2e5976fe5bc3df540c5ad0af700000000000000000000058b'; // 80BAL/20WETH
 
 /**
  * When testing pools with phantom BPT (e.g. ComposableStable), indexes should consider pool tokens with BPT
  */
 
 // swap config
-const swapAmountFloat = '200';
-const swapAmountFloats = ['200', '300', '400', '500', '600'];
+const swapAmountFloat = '10';
+const swapAmountFloats = [
+  swapAmountFloat,
+  String(Number(swapAmountFloat) * 2),
+  String(Number(swapAmountFloat) * 5),
+  String(Number(swapAmountFloat) * 10),
+  String(Number(swapAmountFloat) * 25),
+  String(Number(swapAmountFloat) * 50),
+  String(Number(swapAmountFloat) * 100),
+];
 const assetInIndex = 1;
-const assetOutIndex = 0;
+const assetOutIndex = 2;
 
 // single token join config
-const joinAmountFloat = '1000';
-const tokenInIndex = 0;
+const joinAmountFloat = '10';
+// const tokenInIndex = 1;
+const singleTokenJoinTests = [
+  { amountFloat: joinAmountFloat, tokenIndex: 1 },
+  { amountFloat: String(Number(joinAmountFloat) * 2), tokenIndex: 1 },
+  { amountFloat: String(Number(joinAmountFloat) * 5), tokenIndex: 1 },
+  { amountFloat: String(Number(joinAmountFloat) * 10), tokenIndex: 1 },
+  { amountFloat: String(Number(joinAmountFloat) * 25), tokenIndex: 1 },
+  { amountFloat: String(Number(joinAmountFloat) * 50), tokenIndex: 1 },
+  { amountFloat: String(Number(joinAmountFloat) * 100), tokenIndex: 1 },
+];
 
 // unbalanced join config
-const amountsInFloat = ['10', '0', '1000']; // should add value for BPT if present
+// const amountsInFloat = ['0', '200', '100', '10']; // should add value for BPT if present
+const unbalancedJoinTests = [
+  { amountsInFloat: ['0', '200', '100', '10'] },
+  { amountsInFloat: ['0', '2000', '100', '10'] },
+  // Add more test scenarios as needed
+];
 
 describe('Price impact comparison tests', async () => {
   let pool: PoolWithMethods;
@@ -128,6 +154,8 @@ describe('Price impact comparison tests', async () => {
         const priceRatio = parseFloat(spotPrice) / effectivePrice;
         const priceImpact = 1 - priceRatio + parseFloat(pool.swapFee); // remove swapFee to have results similar to the UI
         console.log(`priceImpactSpotPrice: ${priceImpact}`);
+        const csvLine = `${index + 1},spot price,${priceImpact}\n`;
+        fs.writeFileSync(csvFilePath, csvLine, { flag: 'a' });
       });
 
       it(`should calculate price impact - ABA method - Test ${
@@ -176,171 +204,186 @@ describe('Price impact comparison tests', async () => {
 
         const priceImpactABA = (initialA - finalA) / initialA / 2;
         console.log(`priceImpactABA      : ${priceImpactABA}`);
+        const csvLine = `${index + 1},ABA method,${priceImpactABA}\n`;
+        fs.writeFileSync(csvFilePath, csvLine, { flag: 'a' });
       });
     });
   });
 
   context('single token join', async () => {
-    let tokenIn: PoolToken;
-    let amountIn: BigNumber;
+    singleTokenJoinTests.forEach((test, index) => {
+      let tokenIn: PoolToken;
+      let amountIn: BigNumber;
 
-    before(() => {
-      tokenIn = pool.tokens[tokenInIndex];
-      amountIn = parseFixed(joinAmountFloat, tokenIn.decimals);
-    });
-
-    it('should calculate price impact - spot price method', async () => {
-      const tokensIn = [...pool.tokensList];
-      const amountsIn = Array(pool.tokensList.length).fill('0');
-
-      amountsIn[tokenInIndex] = amountIn.toString();
-
-      const bptIndex = tokensIn.findIndex((t) => t === pool.address);
-      if (bptIndex > -1) {
-        tokensIn.splice(bptIndex, 1);
-        amountsIn.splice(bptIndex, 1);
-      }
-
-      const { priceImpact } = pool.buildJoin(
-        signerAddress,
-        tokensIn,
-        amountsIn,
-        '0' // slippage
-      );
-
-      const priceImpactFloat = parseFloat(
-        formatFixed(BigNumber.from(priceImpact), 18)
-      );
-      console.log(`priceImpactSpotPrice: ${priceImpactFloat}`);
-    });
-
-    it('should calculate price impact - ABA method', async () => {
-      const maxAmountsInByToken = new Map<string, BigNumber>([
-        [tokenIn.address, amountIn],
-      ]);
-
-      const joinParams = pool.buildQueryJoinExactIn({
-        maxAmountsInByToken,
+      before(() => {
+        tokenIn = pool.tokens[test.tokenIndex];
+        amountIn = parseFixed(test.amountFloat, tokenIn.decimals);
       });
 
-      const { bptOut } = await balancerHelpers.callStatic.queryJoin(
-        ...joinParams
-      );
+      it('should calculate price impact - spot price method', async () => {
+        const tokensIn = [...pool.tokensList];
+        const amountsIn = Array(pool.tokensList.length).fill('0');
 
-      const exitParams = pool.buildQueryExitToSingleToken({
-        bptIn: bptOut,
-        tokenOut: tokenIn.address,
+        amountsIn[test.tokenIndex] = amountIn.toString(); // Use the index specified in the test scenario
+
+        const bptIndex = tokensIn.findIndex((t) => t === pool.address);
+        if (bptIndex > -1) {
+          tokensIn.splice(bptIndex, 1);
+          amountsIn.splice(bptIndex, 1);
+        }
+
+        const { priceImpact } = pool.buildJoin(
+          signerAddress,
+          tokensIn,
+          amountsIn,
+          '0' // slippage
+        );
+
+        const priceImpactFloat = parseFloat(
+          formatFixed(BigNumber.from(priceImpact), 18)
+        );
+        console.log(`priceImpactSpotPrice: ${priceImpactFloat}`);
+        const csvLine = `${index + 1},spot price,${priceImpactFloat}\n`;
+        fs.writeFileSync(csvFilePath, csvLine, { flag: 'a' });
       });
 
-      const { amountsOut } = await balancerHelpers.callStatic.queryExit(
-        ...exitParams
-      );
+      it('should calculate price impact - ABA method', async () => {
+        const maxAmountsInByToken = new Map<string, BigNumber>([
+          [tokenIn.address, amountIn],
+        ]);
 
-      const initialA = parseFloat(formatFixed(amountIn, tokenIn.decimals));
-      const finalA = parseFloat(
-        formatFixed(amountsOut[tokenInIndex], tokenIn.decimals)
-      );
-      const priceImpactABA = (initialA - finalA) / initialA / 2;
-      console.log(`priceImpactABA      : ${priceImpactABA}`);
+        const joinParams = pool.buildQueryJoinExactIn({
+          maxAmountsInByToken,
+        });
+
+        const { bptOut } = await balancerHelpers.callStatic.queryJoin(
+          ...joinParams
+        );
+
+        const exitParams = pool.buildQueryExitToSingleToken({
+          bptIn: bptOut,
+          tokenOut: tokenIn.address,
+        });
+
+        const { amountsOut } = await balancerHelpers.callStatic.queryExit(
+          ...exitParams
+        );
+
+        const initialA = parseFloat(formatFixed(amountIn, tokenIn.decimals));
+        const finalA = parseFloat(
+          formatFixed(amountsOut[test.tokenIndex], tokenIn.decimals) // Use the index specified in the test scenario
+        );
+        const priceImpactABA = (initialA - finalA) / initialA / 2;
+        console.log(`priceImpactABA      : ${priceImpactABA}`);
+        const csvLine = `${index + 1},ABA method,${priceImpactABA}\n`;
+        fs.writeFileSync(csvFilePath, csvLine, { flag: 'a' });
+      });
     });
   });
 
   context('unbalanced join - 2 tokens', async () => {
-    let tokensIn: string[];
-    let amountsIn: BigNumber[];
+    unbalancedJoinTests.forEach((test, index) => {
+      let tokensIn: string[];
+      let amountsIn: BigNumber[];
 
-    beforeEach(() => {
-      tokensIn = [...pool.tokensList];
-      amountsIn = pool.tokens.map((token, i) =>
-        parseFixed(amountsInFloat[i], token.decimals)
-      );
-    });
+      beforeEach(() => {
+        tokensIn = [...pool.tokensList];
+        amountsIn = pool.tokens.map((token, i) =>
+          parseFixed(test.amountsInFloat[i], token.decimals)
+        );
+      });
 
-    it('should calculate price impact - spot price method', async () => {
-      const bptIndex = tokensIn.findIndex((t) => t === pool.address);
-      if (bptIndex > -1) {
-        tokensIn.splice(bptIndex, 1);
-        amountsIn.splice(bptIndex, 1);
-      }
+      it('should calculate price impact - spot price method', async () => {
+        const bptIndex = tokensIn.findIndex((t) => t === pool.address);
+        if (bptIndex > -1) {
+          tokensIn.splice(bptIndex, 1);
+          amountsIn.splice(bptIndex, 1);
+        }
 
-      const { priceImpact } = pool.buildJoin(
-        signerAddress,
-        tokensIn,
-        amountsIn.map((amount) => amount.toString()),
-        '0' // slippage
-      );
+        const { priceImpact } = pool.buildJoin(
+          signerAddress,
+          tokensIn,
+          amountsIn.map((amount) => amount.toString()),
+          '0' // slippage
+        );
 
-      const priceImpactFloat = parseFloat(
-        formatFixed(BigNumber.from(priceImpact), 18)
-      );
-      console.log(`priceImpactSpotPrice: ${priceImpactFloat}`);
-    });
+        const priceImpactFloat = parseFloat(
+          formatFixed(BigNumber.from(priceImpact), 18)
+        );
+        console.log(`priceImpactSpotPrice: ${priceImpactFloat}`);
+        const csvLine = `${index + 1},spot price,${priceImpactFloat}\n`;
+        fs.writeFileSync(csvFilePath, csvLine, { flag: 'a' });
+      });
 
-    it('should calculate price impact - ABA method', async () => {
-      const maxAmountsInByToken = new Map<string, BigNumber>(
-        amountsIn.map((a, i) => [tokensIn[i], a])
-      );
+      it('should calculate price impact - ABA method', async () => {
+        const maxAmountsInByToken = new Map<string, BigNumber>(
+          amountsIn.map((a, i) => [tokensIn[i], a])
+        );
 
-      // query unbalanced join
-      const { bptOut } = await balancerHelpers.callStatic.queryJoin(
-        ...pool.buildQueryJoinExactIn({
-          maxAmountsInByToken,
-        })
-      );
+        // query unbalanced join
+        const { bptOut } = await balancerHelpers.callStatic.queryJoin(
+          ...pool.buildQueryJoinExactIn({
+            maxAmountsInByToken,
+          })
+        );
 
-      // calculate proportional amounts out
-      const { amountsOut } = await balancerHelpers.callStatic.queryExit(
-        ...pool.buildQueryExitProportionally({
-          bptIn: bptOut,
-        })
-      );
+        // calculate proportional amounts out
+        const { amountsOut } = await balancerHelpers.callStatic.queryExit(
+          ...pool.buildQueryExitProportionally({
+            bptIn: bptOut,
+          })
+        );
 
-      // diff between unbalanced and proportional amounts for token 1
-      const diffs = amountsOut.map((a, i) => a.sub(amountsIn[i]));
-      const excessIndex = diffs.findIndex((a) => a.gt(0)); // token index that has excess amount on proportional compared to unbalanced
-      const otherIndex = diffs.findIndex((a) => a.lt(0));
-      const diffExcess = amountsOut[excessIndex].sub(amountsIn[excessIndex]);
+        // diff between unbalanced and proportional amounts for token 1
+        const diffs = amountsOut.map((a, i) => a.sub(amountsIn[i]));
+        const excessIndex = diffs.findIndex((a) => a.gt(0)); // token index that has excess amount on proportional compared to unbalanced
+        const otherIndex = diffs.findIndex((a) => a.lt(0));
+        const diffExcess = amountsOut[excessIndex].sub(amountsIn[excessIndex]);
 
-      // swap that diff to token other (non-excess)
-      const returnAmounts = await queryBatchSwap(
-        vault,
-        SwapType.SwapExactIn,
-        [
-          {
-            poolId: pool.id,
-            assetInIndex: excessIndex,
-            assetOutIndex: otherIndex,
-            amount: diffExcess.toString(),
-            userData: '0x',
-          },
-        ],
-        pool.tokensList
-      );
+        // swap that diff to token other (non-excess)
+        const returnAmounts = await queryBatchSwap(
+          vault,
+          SwapType.SwapExactIn,
+          [
+            {
+              poolId: pool.id,
+              assetInIndex: excessIndex,
+              assetOutIndex: otherIndex,
+              amount: diffExcess.toString(),
+              userData: '0x',
+            },
+          ],
+          pool.tokensList
+        );
 
-      // calculate final other token amount (using sub because returnAmounts[0] is negative)
-      const otherTokenFinal = amountsOut[otherIndex].sub(
-        BigNumber.from(returnAmounts[otherIndex])
-      );
+        // calculate final other token amount (using sub because returnAmounts[0] is negative)
+        const otherTokenFinal = amountsOut[otherIndex].sub(
+          BigNumber.from(returnAmounts[otherIndex])
+        );
 
-      // diff between unbalanced and proportional amounts for token 0
-      const diffOther = amountsIn[otherIndex].sub(otherTokenFinal);
+        // diff between unbalanced and proportional amounts for token 0
+        const diffOther = amountsIn[otherIndex].sub(otherTokenFinal);
 
-      // query join with diffOther in order to get BPT difference between unbalanced and proportional
-      const diffAmounts = new Map<string, BigNumber>([
-        [pool.tokensList[otherIndex], diffOther],
-      ]);
+        // query join with diffOther in order to get BPT difference between unbalanced and proportional
+        const diffAmounts = new Map<string, BigNumber>([
+          [pool.tokensList[otherIndex], diffOther],
+        ]);
 
-      const { bptOut: bptOutDiff } = await balancerHelpers.callStatic.queryJoin(
-        ...pool.buildQueryJoinExactIn({
-          maxAmountsInByToken: diffAmounts,
-        })
-      );
+        const { bptOut: bptOutDiff } =
+          await balancerHelpers.callStatic.queryJoin(
+            ...pool.buildQueryJoinExactIn({
+              maxAmountsInByToken: diffAmounts,
+            })
+          );
 
-      const initialBPT = parseFloat(formatFixed(bptOut, 18));
-      const finalBPT = parseFloat(formatFixed(bptOut.sub(bptOutDiff), 18));
+        const initialBPT = parseFloat(formatFixed(bptOut, 18));
+        const finalBPT = parseFloat(formatFixed(bptOut.sub(bptOutDiff), 18));
 
-      const priceImpactABA = (initialBPT - finalBPT) / initialBPT / 2;
-      console.log(`priceImpactABA      : ${priceImpactABA}`);
+        const priceImpactABA = (initialBPT - finalBPT) / initialBPT / 2;
+        console.log(`priceImpactABA      : ${priceImpactABA}`);
+        const csvLine = `${index + 1},ABA method,${priceImpactABA}\n`;
+        fs.writeFileSync(csvFilePath, csvLine, { flag: 'a' });
+      });
     });
   });
 });
